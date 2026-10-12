@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Дашборд заказов</title>
+  <meta name="description" content="Интерактивный дашборд заказов клиента: метрики по месяцам, анализ позиций и категорий (d3.js + Vue.js)">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+  <header class="top">
+    <div class="wrap">
+      <div class="title-row">
+        <div>
+          <p class="eyebrow">Домашнее задание · Визуализация · Неделя 1</p>
+          <h1>Заказы клиента «Сова-минималист»</h1>
+          <p class="sub">
+            {{ fmtInt(totals.orders) }} доставленных заказов с {{ fmtDateLong(firstDate) }} по {{ fmtDateLong(lastDate) }}
+            · {{ fmtRub(totals.spend) }} потрачено · {{ totals.itemsCount }} разных позиций
+          </p>
+        </div>
+      </div>
+
+      <!-- Фильтр по категориям -->
+      <div class="filter-bar" role="group" aria-label="Фильтр по категориям">
+        <span class="filter-label">Категории</span>
+        <button class="chip" :class="{active: selected.length === 0}" @click="clearCats">Все</button>
+        <button v-for="(c, i) in categories" :key="c" class="chip"
+                :class="{active: selected.includes(i)}" @click="toggleCat(i)">
+          {{ c }}
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- KPI -->
+    <section class="section">
+      <div class="section-head">
+        <h2>Основные метрики</h2>
+        <p class="hint">Текущее значение — {{ monthLong(lastMonth) }} (последний месяц в данных). Спарклайн — последние 24 месяца.
+          <span v-if="selected.length"> Учтены только выбранные категории.</span></p>
+      </div>
+      <div class="kpis">
+        <article v-for="k in kpis" :key="k.key" class="kpi" :style="{'--accent': k.color}">
+          <div class="kpi-top">
+            <span class="kpi-dot"></span>
+            <h3>{{ k.title }}</h3>
+          </div>
+          <div class="kpi-value">{{ k.value }}</div>
+          <div class="kpi-deltas">
+            <span class="delta" :class="k.momClass">{{ k.mom }}</span>
+            <span class="muted">к {{ monthShort(prevMonth) }}</span>
+            <span class="sep">·</span>
+            <span class="delta" :class="k.avgClass">{{ k.vsAvg }}</span>
+            <span class="muted">к среднему за 24 мес</span>
+          </div>
+          <svg class="spark" :ref="el => sparkRefs[k.key] = el" aria-hidden="true"></svg>
+          <div class="kpi-foot">
+            <span>За 24 мес: <b>{{ k.total24 }}</b></span>
+            <span>Среднее/мес: <b>{{ k.avg24 }}</b></span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Динамика 24 месяца -->
+    <section class="section card">
+      <div class="section-head">
+        <h2>Динамика за последние 24 месяца</h2>
+        <p class="hint">Наведите на месяц, чтобы увидеть значения всех трёх метрик. Пунктир — среднее за период.</p>
+      </div>
+      <div ref="trendEl" class="trend"></div>
+      <details class="table-view">
+        <summary>Показать таблицей</summary>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Месяц</th><th>Заказов</th><th>Траты</th><th>Средняя скидка</th><th>Скидка, ₽</th></tr></thead>
+            <tbody>
+              <tr v-for="m in monthly" :key="m.month">
+                <td>{{ monthLong(m.month) }}</td><td>{{ m.orders }}</td><td>{{ fmtRub(m.spend) }}</td>
+                <td>{{ fmtPct(m.discPct) }}</td><td>{{ fmtRub(m.disc) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <!-- Позиции -->
+    <section class="section card">
+      <div class="section-head">
+        <div>
+          <h2>Что клиент покупает чаще всего и на что тратит больше</h2>
+          <p class="hint">Слева — сколько штук куплено, справа — сколько потрачено. Наведите на позицию, чтобы увидеть динамику её цены.
+            <span v-if="!servicesSelected">Доставка и упаковка скрыты — выберите категорию «Услуги Лавки», чтобы их увидеть.</span></p>
+        </div>
+        <div class="controls">
+          <div class="seg" role="group" aria-label="Период">
+            <button v-for="p in periods" :key="p.key" :class="{active: period === p.key}" @click="period = p.key">{{ p.label }}</button>
+          </div>
+          <div class="seg" role="group" aria-label="Сортировка">
+            <button :class="{active: sortBy === 'qty'}" @click="sortBy = 'qty'">По штукам</button>
+            <button :class="{active: sortBy === 'spend'}" @click="sortBy = 'spend'">По тратам</button>
+          </div>
+          <div class="seg" role="group" aria-label="Количество позиций">
+            <button v-for="n in [10, 15, 25]" :key="n" :class="{active: topN === n}" @click="topN = n">Топ {{ n }}</button>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="sw sw-qty"></i>Куплено, шт.</span>
+        <span><i class="sw sw-spend"></i>Потрачено, ₽</span>
+      </div>
+      <div ref="itemsEl" class="items-chart"></div>
+      <p v-if="!itemStats.length" class="empty">Нет покупок в выбранных категориях за этот период.</p>
+    </section>
+
+    <!-- Категории -->
+    <section class="section card">
+      <div class="section-head">
+        <div>
+          <h2>Категории</h2>
+          <p class="hint">{{ periodLabel }}. Нажмите на строку, чтобы отфильтровать дашборд по категории. Сортировка — по тратам.</p>
+        </div>
+      </div>
+      <div class="cat-list">
+        <div class="cat-row cat-head">
+          <span>Категория</span><span>Траты и доля</span><span class="num">Заказов</span><span class="num">Штук</span>
+          <span class="num">Ср. цена шт.</span><span class="num">Ср. скидка</span><span>Траты по месяцам</span>
+        </div>
+        <button v-for="c in catStats" :key="c.idx" class="cat-row"
+                :class="{sel: selected.includes(c.idx), dim: selected.length && !selected.includes(c.idx)}"
+                @click="toggleCat(c.idx)">
+          <span class="cat-name">
+            <span class="thumbs"><img v-for="t in c.top" :key="t.item" :src="items[t.item].img" :alt="items[t.item].n"></span>
+            <span>
+              <b>{{ c.name }}</b>
+              <small>Топ: {{ c.top.length ? items[c.top[0].item].n : '—' }}</small>
+            </span>
+          </span>
+          <span class="cat-spend">
+            <span class="bar"><i :style="{width: (c.spend / maxCatSpend * 100) + '%'}"></i></span>
+            <span class="cat-spend-val"><b>{{ fmtRub(c.spend) }}</b> <small>{{ fmtPct(c.share) }}</small></span>
+          </span>
+          <span class="num" data-label="Заказов">{{ fmtInt(c.orders) }}</span>
+          <span class="num" data-label="Штук">{{ fmtInt(c.qty) }}</span>
+          <span class="num" data-label="Ср. цена">{{ fmtRub(c.avgPrice) }}</span>
+          <span class="num" data-label="Ср. скидка">{{ fmtPct(c.discPct) }}</span>
+          <span class="cat-spark">
+            <svg viewBox="0 0 120 28" preserveAspectRatio="none"><path :d="c.spark"></path></svg>
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <footer class="foot">
+      Учтены только доставленные заказы ({{ cancelledOrders }} отменённых исключены). «Средняя скидка» — доля скидки от стоимости без скидки:
+      Σ(цена без скидки − цена со скидкой) × кол-во / Σ цена без скидки × кол-во. Сделано на d3.js и Vue.js.
+    </footer>
+  </main>
+
+  <div ref="tipEl" class="tooltip" role="tooltip"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+<script src="js/data.js"></script>
+<script src="js/images.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
